@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zen Blaster</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: radial-gradient(circle at center, #1a1a2e 0%, #0f0f1e 100%);
+            overflow: hidden;
+            height: 100vh;
+            cursor: grab;
+        }
+
+        body.dragging {
+            cursor: grabbing;
+        }
+
+        canvas {
+            display: block;
+            touch-action: none;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            z-index: 100;
+            pointer-events: none;
+        }
+
+        #scoreBar {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 15px;
+            padding: 15px 25px;
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+            display: flex;
+            gap: 30px;
+            align-items: center;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .treasure-count {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .treasure-icon {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .gem { background: linear-gradient(45deg, #ff6b6b, #ff8e8e); }
+        .coin { background: linear-gradient(45deg, #ffd93d, #fff455); }
+        .crystal { background: linear-gradient(45deg, #4ecdc4, #7fdddd); }
+        .star { background: linear-gradient(45deg, #a8e6cf, #c8f7c5); }
+
+        #controls {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            pointer-events: auto;
+        }
+
+        .control-btn {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            padding: 12px 18px;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.25);
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui">
+        <div id="scoreBar">
+            <div class="treasure-count">
+                <div class="treasure-icon gem"></div>
+                <span id="gemCount">0</span>
+            </div>
+            <div class="treasure-count">
+                <div class="treasure-icon coin"></div>
+                <span id="coinCount">0</span>
+            </div>
+            <div class="treasure-count">
+                <div class="treasure-icon crystal"></div>
+                <span id="crystalCount">0</span>
+            </div>
+            <div class="treasure-count">
+                <div class="treasure-icon star"></div>
+                <span id="starCount">0</span>
+            </div>
+            <div style="margin-left: 20px; border-left: 1px solid rgba(255,255,255,0.3); padding-left: 20px;">
+                <div style="display: flex; gap: 20px; font-size: 14px;">
+                    <div>⭕ Radius: <span id="radiusUpgrades">0 (30px)</span></div>
+                    <div>💎 Gems: <span id="gemUpgrades">0 (1.0x)</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="controls">
+        <button class="control-btn" onclick="resetGame()">Reset</button>
+        <button class="control-btn" onclick="zoomIn()">Zoom +</button>
+        <button class="control-btn" onclick="zoomOut()">Zoom -</button>
+    </div>
+
+    <script>
+        class InfiniteGridGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.setupCanvas();
+
+                // Game state
+                this.camera = { x: 0, y: 0 };
+                this.zoom = 1;
+                this.gridSize = 60;
+                this.isDragging = false;
+                this.lastMousePos = { x: 0, y: 0 };
+
+                // Touch state for mobile
+                this.touches = new Map(); // Track multiple touch points
+                this.lastTouchDistance = null; // For pinch-to-zoom
+                this.touchStartPos = null; // Track initial touch position for tap detection
+                this.touchMoved = false; // Track if touch moved (drag vs tap)
+
+                // Game objects
+                this.boxes = new Map(); // Only store modified boxes
+                this.bombs = [];
+                this.explosions = [];
+                this.treasures = [];
+                this.particles = [];
+                this.powerupBoxes = [];
+
+                // Score tracking
+                this.score = { gems: 0, coins: 0, crystals: 0, stars: 0 };
+
+                // Powerup tracking
+                this.collectRadius = 30; // Base collection radius
+                this.gemMultiplier = 1; // Base gem drop multiplier
+                this.radiusUpgrades = 0;
+                this.gemUpgrades = 0;
+
+                // Performance optimization
+                this.lastFrameTime = 0;
+                this.frameCount = 0;
+
+                this.setupEventListeners();
+                this.gameLoop();
+            }
+
+            setupCanvas() {
+                this.resizeCanvas();
+                window.addEventListener('resize', () => this.resizeCanvas());
+            }
+
+            resizeCanvas() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+            }
+
+            setupEventListeners() {
+                // Mouse events
+                this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
+                this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
+                this.canvas.addEventListener('mouseup', (e) => this.handleMouseUp(e));
+                this.canvas.addEventListener('click', (e) => this.handleClick(e));
+
+                // Touch events for mobile
+                this.canvas.addEventListener('touchstart', (e) => this.handleTouchStart(e));
+                this.canvas.addEventListener('touchmove', (e) => this.handleTouchMove(e));
+                this.canvas.addEventListener('touchend', (e) => this.handleTouchEnd(e));
+
+                // Prevent context menu
+                this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+                // Mouse wheel for zooming
+                this.canvas.addEventListener('wheel', (e) => this.handleWheel(e));
+            }
+
+            getMousePos(e) {
+                const rect = this.canvas.getBoundingClientRect();
+                return {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+            }
+
+            screenToWorld(screenX, screenY) {
+                return {
+                    x: (screenX - this.canvas.width / 2) / this.zoom + this.camera.x,
+                    y: (screenY - this.canvas.height / 2) / this.zoom + this.camera.y
+                };
+            }
+
+            worldToScreen(worldX, worldY) {
+                return {
+                    x: (worldX - this.camera.x) * this.zoom + this.canvas.width / 2,
+                    y: (worldY - this.camera.y) * this.zoom + this.canvas.height / 2
+                };
+            }
+
+            getGridPos(worldX, worldY) {
+                return {
+                    x: Math.floor(worldX / this.gridSize),
+                    y: Math.floor(worldY / this.gridSize)
+                };
+            }
+
+            handleMouseDown(e) {
+                if (e.button === 0) { // Left click
+                    this.isDragging = true;
+                    document.body.classList.add('dragging');
+                    this.lastMousePos = this.getMousePos(e);
+                }
+            }
+
+            handleMouseMove(e) {
+                const mousePos = this.getMousePos(e);
+
+                if (this.isDragging) {
+                    const dx = mousePos.x - this.lastMousePos.x;
+                    const dy = mousePos.y - this.lastMousePos.y;
+
+                    this.camera.x -= dx / this.zoom;
+                    this.camera.y -= dy / this.zoom;
+                }
+
+                this.lastMousePos = mousePos;
+                this.checkTreasureHover(mousePos);
+                this.checkPowerupBoxHover(mousePos);
+            }
+
+            handleMouseUp(e) {
+                this.isDragging = false;
+                document.body.classList.remove('dragging');
+            }
+
+            handleClick(e) {
+                if (!this.isDragging) {
+                    const mousePos = this.getMousePos(e);
+                    const worldPos = this.screenToWorld(mousePos.x, mousePos.y);
+                    const gridPos = this.getGridPos(worldPos.x, worldPos.y);
+
+                    this.plantBomb(gridPos.x, gridPos.y);
+                }
+            }
+
+            // Touch event handlers
+            handleTouchStart(e) {
+                e.preventDefault();
+
+                // Store all current touches
+                this.touches.clear();
+                for (let i = 0; i < e.touches.length; i++) {
+                    const touch = e.touches[i];
+                    const pos = this.getMousePos(touch);
+                    this.touches.set(touch.identifier, pos);
+                }
+
+                if (e.touches.length === 1) {
+                    // Single touch - potential drag or tap
+                    const touch = e.touches[0];
+                    const pos = this.getMousePos(touch);
+                    this.isDragging = true;
+                    this.touchMoved = false;
+                    this.touchStartPos = { ...pos };
+                    this.lastMousePos = pos;
+                    document.body.classList.add('dragging');
+                } else if (e.touches.length === 2) {
+                    // Two touches - pinch to zoom
+                    this.isDragging = false;
+                    document.body.classList.remove('dragging');
+                    this.lastTouchDistance = this.getTouchDistance(e.touches);
+                }
+            }
+
+            handleTouchMove(e) {
+                e.preventDefault();
+
+                if (e.touches.length === 1 && this.isDragging) {
+                    // Single touch drag (panning)
+                    const touch = e.touches[0];
+                    const pos = this.getMousePos(touch);
+
+                    const dx = pos.x - this.lastMousePos.x;
+                    const dy = pos.y - this.lastMousePos.y;
+
+                    // Check if moved significantly (for tap detection)
+                    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                        this.touchMoved = true;
+                    }
+
+                    this.camera.x -= dx / this.zoom;
+                    this.camera.y -= dy / this.zoom;
+
+                    this.lastMousePos = pos;
+                    this.checkTreasureHover(pos);
+                    this.checkPowerupBoxHover(pos);
+                } else if (e.touches.length === 2) {
+                    // Pinch to zoom
+                    const currentDistance = this.getTouchDistance(e.touches);
+
+                    if (this.lastTouchDistance !== null) {
+                        const scale = currentDistance / this.lastTouchDistance;
+
+                        // Get center point of pinch
+                        const touch1 = this.getMousePos(e.touches[0]);
+                        const touch2 = this.getMousePos(e.touches[1]);
+                        const centerX = (touch1.x + touch2.x) / 2;
+                        const centerY = (touch1.y + touch2.y) / 2;
+
+                        // Get world position before zoom
+                        const worldPosBefore = this.screenToWorld(centerX, centerY);
+
+                        // Apply zoom with limits
+                        const newZoom = this.zoom * scale;
+                        this.zoom = Math.max(0.25, Math.min(2.5, newZoom));
+
+                        // Get world position after zoom
+                        const worldPosAfter = this.screenToWorld(centerX, centerY);
+
+                        // Adjust camera to keep pinch center consistent
+                        this.camera.x += worldPosBefore.x - worldPosAfter.x;
+                        this.camera.y += worldPosBefore.y - worldPosAfter.y;
+                    }
+
+                    this.lastTouchDistance = currentDistance;
+                }
+            }
+
+            handleTouchEnd(e) {
+                e.preventDefault();
+
+                if (e.touches.length === 0) {
+                    // All touches ended
+                    if (!this.touchMoved && this.touchStartPos) {
+                        // Was a tap, not a drag - place bomb
+                        const worldPos = this.screenToWorld(this.touchStartPos.x, this.touchStartPos.y);
+                        const gridPos = this.getGridPos(worldPos.x, worldPos.y);
+                        this.plantBomb(gridPos.x, gridPos.y);
+                    }
+
+                    this.isDragging = false;
+                    document.body.classList.remove('dragging');
+                    this.lastTouchDistance = null;
+                    this.touchStartPos = null;
+                    this.touchMoved = false;
+                } else if (e.touches.length === 1) {
+                    // One finger lifted, one remains - switch to panning
+                    this.lastTouchDistance = null;
+                    const touch = e.touches[0];
+                    const pos = this.getMousePos(touch);
+                    this.isDragging = true;
+                    this.touchMoved = false;
+                    this.touchStartPos = { ...pos };
+                    this.lastMousePos = pos;
+                    document.body.classList.add('dragging');
+                }
+            }
+
+            getTouchDistance(touches) {
+                const touch1 = this.getMousePos(touches[0]);
+                const touch2 = this.getMousePos(touches[1]);
+                const dx = touch2.x - touch1.x;
+                const dy = touch2.y - touch1.y;
+                return Math.sqrt(dx * dx + dy * dy);
+            }
+
+            handleWheel(e) {
+                e.preventDefault();
+
+                const zoomFactor = 1.1;
+                const mousePos = this.getMousePos(e);
+
+                // Get world position before zoom
+                const worldPosBefore = this.screenToWorld(mousePos.x, mousePos.y);
+
+                if (e.deltaY < 0) {
+                    // Zoom in
+                    this.zoom = Math.min(this.zoom * zoomFactor, 2.5); // Max zoom 2.5x
+                } else {
+                    // Zoom out
+                    this.zoom = Math.max(this.zoom / zoomFactor, 0.25); // Min zoom 0.25x
+                }
+
+                // Get world position after zoom
+                const worldPosAfter = this.screenToWorld(mousePos.x, mousePos.y);
+
+                // Adjust camera to keep mouse position consistent
+                this.camera.x += worldPosBefore.x - worldPosAfter.x;
+                this.camera.y += worldPosBefore.y - worldPosAfter.y;
+            }
+
+            plantBomb(gridX, gridY) {
+                // Check if there's already a bomb at this position
+                const existingBomb = this.bombs.find(b => b.gridX === gridX && b.gridY === gridY);
+                if (existingBomb) return;
+
+                // Check if this box has already been exploded
+                const key = `${gridX},${gridY}`;
+                const box = this.boxes.get(key);
+                if (box && box.exploded) return; // Can't place bomb on exploded box
+
+                const worldX = gridX * this.gridSize + this.gridSize / 2;
+                const worldY = gridY * this.gridSize + this.gridSize / 2;
+
+                this.bombs.push({
+                    gridX,
+                    gridY,
+                    worldX,
+                    worldY,
+                    timer: 0.5, // 0.5 seconds
+                    planted: Date.now()
+                });
+            }
+
+            renderPowerupBoxes() {
+                this.powerupBoxes.forEach(powerupBox => {
+                    if (powerupBox.collected) return;
+
+                    const screenPos = this.worldToScreen(powerupBox.x, powerupBox.y);
+                    const bobOffset = Math.sin(powerupBox.bob) * 8 * this.zoom;
+                    const pulseScale = 1 + Math.sin(powerupBox.pulse) * 0.2;
+                    const size = 18 * this.zoom * pulseScale;
+
+                    const color = powerupBox.type === 'radius' ? '#00ff88' : '#ff8800';
+
+                    // Intense glow effect
+                    const glowGradient = this.ctx.createRadialGradient(
+                        screenPos.x, screenPos.y + bobOffset, 0,
+                        screenPos.x, screenPos.y + bobOffset, size * 3
+                    );
+                    glowGradient.addColorStop(0, color + 'CC');
+                    glowGradient.addColorStop(0.5, color + '44');
+                    glowGradient.addColorStop(1, color + '00');
+
+                    this.ctx.fillStyle = glowGradient;
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y + bobOffset, size * 3, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Box body with gradient
+                    const boxGradient = this.ctx.createLinearGradient(
+                        screenPos.x - size, screenPos.y + bobOffset - size,
+                        screenPos.x + size, screenPos.y + bobOffset + size
+                    );
+                    boxGradient.addColorStop(0, color);
+                    boxGradient.addColorStop(1, color + '88');
+
+                    this.ctx.fillStyle = boxGradient;
+                    this.ctx.fillRect(
+                        screenPos.x - size/2, screenPos.y + bobOffset - size/2,
+                        size, size
+                    );
+
+                    // Border
+                    this.ctx.strokeStyle = '#ffffff';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(
+                        screenPos.x - size/2, screenPos.y + bobOffset - size/2,
+                        size, size
+                    );
+
+                    // Icon
+                    this.ctx.fillStyle = '#ffffff';
+                    this.ctx.font = `${size * 0.6}px Arial`;
+                    this.ctx.textAlign = 'center';
+                    this.ctx.textBaseline = 'middle';
+
+                    const icon = powerupBox.type === 'radius' ? '⭕' : '💎';
+                    this.ctx.fillText(icon, screenPos.x, screenPos.y + bobOffset);
+
+                    // Life indicator
+                    const lifeBarWidth = 40 * this.zoom;
+                    const lifeBarHeight = 5 * this.zoom;
+                    const lifePercent = powerupBox.life / 10.0;
+
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                    this.ctx.fillRect(
+                        screenPos.x - lifeBarWidth / 2,
+                        screenPos.y + bobOffset + size + 12 * this.zoom,
+                        lifeBarWidth,
+                        lifeBarHeight
+                    );
+
+                    this.ctx.fillStyle = lifePercent > 0.3 ? color : '#ff6b6b';
+                    this.ctx.fillRect(
+                        screenPos.x - lifeBarWidth / 2,
+                        screenPos.y + bobOffset + size + 12 * this.zoom,
+                        lifeBarWidth * lifePercent,
+                        lifeBarHeight
+                    );
+                });
+            }
+
+            explodeBox(gridX, gridY) {
+                const key = `${gridX},${gridY}`;
+                const box = this.boxes.get(key);
+
+                // If box is already exploded, don't explode again
+                if (box && box.exploded) return;
+
+                this.boxes.set(key, { exploded: true, explodedAt: Date.now() });
+
+                // Create explosion effect
+                const worldX = gridX * this.gridSize + this.gridSize / 2;
+                const worldY = gridY * this.gridSize + this.gridSize / 2;
+
+                this.explosions.push({
+                    x: worldX,
+                    y: worldY,
+                    radius: 0,
+                    maxRadius: this.gridSize * 0.8,
+                    life: 1.0,
+                    created: Date.now()
+                });
+
+                // Create explosion particles
+                for (let i = 0; i < 12; i++) {
+                    const angle = (Math.PI * 2 * i) / 12;
+                    const speed = 150 + Math.random() * 100;
+                    this.particles.push({
+                        x: worldX,
+                        y: worldY,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        life: 0.8 + Math.random() * 0.4,
+                        maxLife: 1.2,
+                        size: 3 + Math.random() * 4,
+                        color: `hsl(${Math.random() * 60 + 10}, 100%, 70%)`
+                    });
+                }
+
+                // Small chance to spawn powerup box
+                if (Math.random() < 0.02) { // 2% chance
+                    this.spawnPowerupBox(worldX, worldY);
+                }
+
+                // Drop treasures
+                this.dropTreasures(worldX, worldY);
+            }
+
+            spawnPowerupBox(worldX, worldY) {
+                const angle = Math.random() * Math.PI * 2;
+                const distance = 30 + Math.random() * 40;
+                const type = Math.random() > 0.5 ? 'radius' : 'gems';
+
+                this.powerupBoxes.push({
+                    x: worldX + Math.cos(angle) * distance,
+                    y: worldY + Math.sin(angle) * distance,
+                    type,
+                    life: 10.0, // 10 seconds to collect (longer than treasures)
+                    collected: false,
+                    bob: Math.random() * Math.PI * 2,
+                    pulse: 0,
+                    created: Date.now()
+                });
+            }
+
+            dropTreasures(worldX, worldY) {
+                // Much lower chance and fewer treasures
+                if (Math.random() > 0.3) return; // Only 30% chance to drop anything
+
+                // Apply gem multiplier to treasure count
+                let baseTreasures = Math.random() > 0.7 ? 2 : 1;
+                const numTreasures = Math.min(baseTreasures * this.gemMultiplier, 8); // Cap at 8 treasures
+                const treasureTypes = ['gem', 'coin', 'crystal', 'star'];
+
+                for (let i = 0; i < numTreasures; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = 20 + Math.random() * 30;
+                    const type = treasureTypes[Math.floor(Math.random() * treasureTypes.length)];
+
+                    this.treasures.push({
+                        x: worldX + Math.cos(angle) * distance,
+                        y: worldY + Math.sin(angle) * distance,
+                        type,
+                        life: 5.0, // 5 seconds to collect
+                        collected: false,
+                        bob: Math.random() * Math.PI * 2,
+                        created: Date.now()
+                    });
+                }
+            }
+
+            checkTreasureHover(mousePos) {
+                const worldPos = this.screenToWorld(mousePos.x, mousePos.y);
+
+                this.treasures.forEach(treasure => {
+                    if (treasure.collected) return;
+
+                    const dx = treasure.x - worldPos.x;
+                    const dy = treasure.y - worldPos.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < this.collectRadius) { // Use dynamic collection radius
+                        treasure.collected = true;
+                        this.score[treasure.type + 's']++;
+                        this.updateScore();
+
+                        // Create collect particles
+                        for (let i = 0; i < 8; i++) {
+                            const angle = (Math.PI * 2 * i) / 8;
+                            this.particles.push({
+                                x: treasure.x,
+                                y: treasure.y,
+                                vx: Math.cos(angle) * 80,
+                                vy: Math.sin(angle) * 80,
+                                life: 0.5,
+                                maxLife: 0.5,
+                                size: 2,
+                                color: this.getTreasureColor(treasure.type)
+                            });
+                        }
+                    }
+                });
+            }
+
+            checkPowerupBoxHover(mousePos) {
+                const worldPos = this.screenToWorld(mousePos.x, mousePos.y);
+
+                this.powerupBoxes.forEach(powerupBox => {
+                    if (powerupBox.collected) return;
+
+                    const dx = powerupBox.x - worldPos.x;
+                    const dy = powerupBox.y - worldPos.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < 25) {
+                        powerupBox.collected = true;
+
+                        if (powerupBox.type === 'radius') {
+                            this.radiusUpgrades++;
+                            this.collectRadius = 30 + (this.radiusUpgrades * 15); // +15 radius per upgrade
+                        } else if (powerupBox.type === 'gems') {
+                            this.gemUpgrades++;
+                            this.gemMultiplier = 1 + (this.gemUpgrades * 0.5); // +50% gems per upgrade
+                        }
+
+                        this.updateScore();
+
+                        // Create powerful collect particles
+                        for (let i = 0; i < 16; i++) {
+                            const angle = (Math.PI * 2 * i) / 16;
+                            this.particles.push({
+                                x: powerupBox.x,
+                                y: powerupBox.y,
+                                vx: Math.cos(angle) * 120,
+                                vy: Math.sin(angle) * 120,
+                                life: 1.0,
+                                maxLife: 1.0,
+                                size: 4,
+                                color: powerupBox.type === 'radius' ? '#00ff88' : '#ff8800'
+                            });
+                        }
+                    }
+                });
+            }
+
+            getTreasureColor(type) {
+                const colors = {
+                    gem: '#ff6b6b',
+                    coin: '#ffd93d',
+                    crystal: '#4ecdc4',
+                    star: '#a8e6cf'
+                };
+                return colors[type];
+            }
+
+            updateScore() {
+                document.getElementById('gemCount').textContent = this.score.gems;
+                document.getElementById('coinCount').textContent = this.score.coins;
+                document.getElementById('crystalCount').textContent = this.score.crystals;
+                document.getElementById('starCount').textContent = this.score.stars;
+
+                // Update powerup display
+                const radiusDisplay = document.getElementById('radiusUpgrades');
+                const gemDisplay = document.getElementById('gemUpgrades');
+
+                if (radiusDisplay) {
+                    radiusDisplay.textContent = `${this.radiusUpgrades} (${Math.round(this.collectRadius)}px)`;
+                }
+                if (gemDisplay) {
+                    gemDisplay.textContent = `${this.gemUpgrades} (${this.gemMultiplier.toFixed(1)}x)`;
+                }
+            }
+
+            update(deltaTime) {
+                // Update bombs
+                this.bombs = this.bombs.filter(bomb => {
+                    bomb.timer -= deltaTime;
+                    if (bomb.timer <= 0) {
+                        this.triggerExplosion(bomb.gridX, bomb.gridY);
+                        return false;
+                    }
+                    return true;
+                });
+
+                // Update explosions
+                this.explosions = this.explosions.filter(explosion => {
+                    explosion.life -= deltaTime * 2;
+                    explosion.radius = explosion.maxRadius * (1 - explosion.life);
+                    return explosion.life > 0;
+                });
+
+                // Update particles
+                this.particles = this.particles.filter(particle => {
+                    particle.x += particle.vx * deltaTime;
+                    particle.y += particle.vy * deltaTime;
+                    particle.life -= deltaTime;
+                    return particle.life > 0;
+                });
+
+                // Update treasures
+                this.treasures = this.treasures.filter(treasure => {
+                    if (treasure.collected) return false;
+                    treasure.life -= deltaTime;
+                    treasure.bob += deltaTime * 3;
+                    return treasure.life > 0;
+                });
+
+                // Update powerup boxes
+                this.powerupBoxes = this.powerupBoxes.filter(powerupBox => {
+                    if (powerupBox.collected) return false;
+                    powerupBox.life -= deltaTime;
+                    powerupBox.bob += deltaTime * 2;
+                    powerupBox.pulse += deltaTime * 4;
+                    return powerupBox.life > 0;
+                });
+            }
+
+            triggerExplosion(centerX, centerY) {
+                // Explode the center box
+                this.explodeBox(centerX, centerY);
+
+                // Chain explosion with probability rings
+                const rings = [
+                    { radius: 1, chance: 0.99 },
+                    { radius: 2, chance: 0.75 },
+                    { radius: 3, chance: 0.50 },
+                    { radius: 4, chance: 0.25 }
+                ];
+
+                rings.forEach(ring => {
+                    for (let dx = -ring.radius; dx <= ring.radius; dx++) {
+                        for (let dy = -ring.radius; dy <= ring.radius; dy++) {
+                            if (dx === 0 && dy === 0) continue;
+
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            if (distance <= ring.radius && Math.random() < ring.chance) {
+                                // Check if target box exists (not already exploded)
+                                const targetKey = `${centerX + dx},${centerY + dy}`;
+                                const targetBox = this.boxes.get(targetKey);
+                                if (targetBox && targetBox.exploded) continue; // Skip already exploded boxes
+
+                                // Delay explosion slightly for visual effect
+                                setTimeout(() => {
+                                    this.explodeBox(centerX + dx, centerY + dy);
+                                }, distance * 50);
+                            }
+                        }
+                    }
+                });
+            }
+
+            getVisibleBounds() {
+                const margin = this.gridSize * 2; // Extra margin for smooth scrolling
+                const worldTopLeft = this.screenToWorld(-margin, -margin);
+                const worldBottomRight = this.screenToWorld(
+                    this.canvas.width + margin,
+                    this.canvas.height + margin
+                );
+
+                return {
+                    left: Math.floor(worldTopLeft.x / this.gridSize),
+                    top: Math.floor(worldTopLeft.y / this.gridSize),
+                    right: Math.ceil(worldBottomRight.x / this.gridSize),
+                    bottom: Math.ceil(worldBottomRight.y / this.gridSize)
+                };
+            }
+
+            render() {
+                // Clear canvas with gradient background
+                const gradient = this.ctx.createRadialGradient(
+                    this.canvas.width / 2, this.canvas.height / 2, 0,
+                    this.canvas.width / 2, this.canvas.height / 2, Math.max(this.canvas.width, this.canvas.height)
+                );
+                gradient.addColorStop(0, '#1a1a2e');
+                gradient.addColorStop(1, '#0f0f1e');
+
+                this.ctx.fillStyle = gradient;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                this.ctx.save();
+
+                // Get visible bounds for viewport culling
+                const bounds = this.getVisibleBounds();
+
+                // Render grid
+                this.renderGrid(bounds);
+
+                // Render explosions
+                this.renderExplosions();
+
+                // Render particles
+                this.renderParticles();
+
+                // Render bombs
+                this.renderBombs();
+
+                // Render treasures
+                this.renderTreasures();
+
+                // Render powerup boxes
+                this.renderPowerupBoxes();
+
+                this.ctx.restore();
+            }
+
+            renderGrid(bounds) {
+                this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+                this.ctx.lineWidth = 1;
+                this.ctx.fillStyle = 'rgba(100, 100, 150, 0.3)';
+
+                for (let x = bounds.left; x <= bounds.right; x++) {
+                    for (let y = bounds.top; y <= bounds.bottom; y++) {
+                        const key = `${x},${y}`;
+                        const box = this.boxes.get(key);
+
+                        if (box && box.exploded) continue;
+
+                        const screenPos = this.worldToScreen(
+                            x * this.gridSize,
+                            y * this.gridSize
+                        );
+
+                        const size = this.gridSize * this.zoom;
+
+                        // Create 3D box effect
+                        const gradient = this.ctx.createLinearGradient(
+                            screenPos.x, screenPos.y,
+                            screenPos.x + size, screenPos.y + size
+                        );
+                        gradient.addColorStop(0, 'rgba(120, 120, 180, 0.8)');
+                        gradient.addColorStop(1, 'rgba(80, 80, 120, 0.6)');
+
+                        this.ctx.fillStyle = gradient;
+                        this.ctx.fillRect(screenPos.x, screenPos.y, size, size);
+
+                        // Add border
+                        this.ctx.strokeRect(screenPos.x, screenPos.y, size, size);
+
+                        // Add highlight for 3D effect
+                        this.ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                        this.ctx.fillRect(screenPos.x, screenPos.y, size, 3);
+                        this.ctx.fillRect(screenPos.x, screenPos.y, 3, size);
+                    }
+                }
+            }
+
+            renderBombs() {
+                this.bombs.forEach(bomb => {
+                    const screenPos = this.worldToScreen(bomb.worldX, bomb.worldY);
+                    const radius = (this.gridSize * 0.3) * this.zoom;
+
+                    // Pulsing effect
+                    const pulseScale = 1 + Math.sin(Date.now() / 100) * 0.2;
+                    const currentRadius = radius * pulseScale;
+
+                    // Bomb body
+                    this.ctx.fillStyle = '#2c2c2c';
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y, currentRadius, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Highlight
+                    this.ctx.fillStyle = '#ff4444';
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x - currentRadius * 0.3, screenPos.y - currentRadius * 0.3, currentRadius * 0.3, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Timer display
+                    this.ctx.fillStyle = 'white';
+                    this.ctx.font = `${12 * this.zoom}px Arial`;
+                    this.ctx.textAlign = 'center';
+                    this.ctx.fillText(
+                        bomb.timer.toFixed(1),
+                        screenPos.x,
+                        screenPos.y + currentRadius + 20 * this.zoom
+                    );
+                });
+            }
+
+            renderExplosions() {
+                this.explosions.forEach(explosion => {
+                    const screenPos = this.worldToScreen(explosion.x, explosion.y);
+                    const radius = explosion.radius * this.zoom;
+
+                    // Outer glow
+                    const gradient = this.ctx.createRadialGradient(
+                        screenPos.x, screenPos.y, 0,
+                        screenPos.x, screenPos.y, radius
+                    );
+                    gradient.addColorStop(0, `rgba(255, 150, 50, ${explosion.life * 0.8})`);
+                    gradient.addColorStop(0.5, `rgba(255, 100, 20, ${explosion.life * 0.4})`);
+                    gradient.addColorStop(1, 'rgba(255, 50, 0, 0)');
+
+                    this.ctx.fillStyle = gradient;
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y, radius, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Inner core
+                    this.ctx.fillStyle = `rgba(255, 255, 255, ${explosion.life})`;
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y, radius * 0.3, 0, Math.PI * 2);
+                    this.ctx.fill();
+                });
+            }
+
+            renderParticles() {
+                this.particles.forEach(particle => {
+                    const screenPos = this.worldToScreen(particle.x, particle.y);
+                    const alpha = particle.life / particle.maxLife;
+                    const size = particle.size * this.zoom * alpha;
+
+                    this.ctx.fillStyle = particle.color.replace(')', `, ${alpha})`).replace('hsl', 'hsla');
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y, size, 0, Math.PI * 2);
+                    this.ctx.fill();
+                });
+            }
+
+            renderTreasures() {
+                this.treasures.forEach(treasure => {
+                    if (treasure.collected) return;
+
+                    const screenPos = this.worldToScreen(treasure.x, treasure.y);
+                    const bobOffset = Math.sin(treasure.bob) * 5 * this.zoom;
+                    const size = 12 * this.zoom;
+
+                    // Glow effect
+                    const glowGradient = this.ctx.createRadialGradient(
+                        screenPos.x, screenPos.y + bobOffset, 0,
+                        screenPos.x, screenPos.y + bobOffset, size * 2
+                    );
+                    glowGradient.addColorStop(0, this.getTreasureColor(treasure.type) + '80');
+                    glowGradient.addColorStop(1, this.getTreasureColor(treasure.type) + '00');
+
+                    this.ctx.fillStyle = glowGradient;
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y + bobOffset, size * 2, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Treasure body
+                    this.ctx.fillStyle = this.getTreasureColor(treasure.type);
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x, screenPos.y + bobOffset, size, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Highlight
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                    this.ctx.beginPath();
+                    this.ctx.arc(screenPos.x - size * 0.3, screenPos.y + bobOffset - size * 0.3, size * 0.4, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    // Life indicator
+                    const lifeBarWidth = 30 * this.zoom;
+                    const lifeBarHeight = 4 * this.zoom;
+                    const lifePercent = treasure.life / 5.0;
+
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+                    this.ctx.fillRect(
+                        screenPos.x - lifeBarWidth / 2,
+                        screenPos.y + bobOffset + size + 10 * this.zoom,
+                        lifeBarWidth,
+                        lifeBarHeight
+                    );
+
+                    this.ctx.fillStyle = lifePercent > 0.3 ? '#4ecdc4' : '#ff6b6b';
+                    this.ctx.fillRect(
+                        screenPos.x - lifeBarWidth / 2,
+                        screenPos.y + bobOffset + size + 10 * this.zoom,
+                        lifeBarWidth * lifePercent,
+                        lifeBarHeight
+                    );
+                });
+            }
+
+            gameLoop(currentTime = 0) {
+                const deltaTime = Math.min((currentTime - this.lastFrameTime) / 1000, 0.016); // Cap at 60fps
+                this.lastFrameTime = currentTime;
+
+                this.update(deltaTime);
+                this.render();
+
+                requestAnimationFrame((time) => this.gameLoop(time));
+            }
+        }
+
+        // Global functions for UI buttons
+        let game;
+
+        function resetGame() {
+            game = new InfiniteGridGame();
+        }
+
+        function zoomIn() {
+            game.zoom = Math.min(game.zoom * 1.2, 2.5);
+        }
+
+        function zoomOut() {
+            game.zoom = Math.max(game.zoom / 1.2, 0.25);
+        }
+
+        // Initialize game when page loads
+        window.addEventListener('load', () => {
+            game = new InfiniteGridGame();
+        });
+    </script>
+</body>
+</html>
+
