@@ -7,30 +7,93 @@ on:
     branches: [ main ]
 
 jobs:
-  deploy:
+  deploy-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       pages: write
       id-token: write
-    
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-    
+
     - name: Setup Pages
       uses: actions/configure-pages@v4
-    
+
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
       with:
         path: '.'
-    
+
     - name: Deploy to GitHub Pages
       id: deployment
       uses: actions/deploy-pages@v4
+
+  deploy-pr-preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@v4
+
+    - name: Checkout gh-pages branch
+      run: |
+        git fetch origin gh-pages
+        git checkout gh-pages
+
+    - name: Configure Git
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Checkout PR files
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        path: pr-build
+
+    - name: Deploy PR to subfolder
+      run: |
+        PR_NUMBER=${{ github.event.pull_request.number }}
+        PR_DIR="pr-${PR_NUMBER}"
+
+        # Remove old PR deployment if it exists
+        rm -rf "${PR_DIR}"
+
+        # Create PR directory and copy files
+        mkdir -p "${PR_DIR}"
+        cp -r pr-build/* "${PR_DIR}/"
+
+        # Remove the temporary build directory
+        rm -rf pr-build
+
+        # Commit and push
+        git add "${PR_DIR}"
+        git commit -m "Deploy PR #${PR_NUMBER} preview" || echo "No changes to commit"
+        git push origin gh-pages
+
+    - name: Comment PR
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          ## 🚀 Preview Deployment
+
+          Your changes have been deployed to GitHub Pages!
+
+          **Preview URL:** https://${{ github.repository_owner }}.github.io/zen-blaster/pr-${{ github.event.pull_request.number }}/
+
+          The preview will be updated automatically with each new commit.
+        comment-tag: preview-deployment
