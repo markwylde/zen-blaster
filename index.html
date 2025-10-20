@@ -150,6 +150,12 @@
                 this.isDragging = false;
                 this.lastMousePos = { x: 0, y: 0 };
 
+                // Touch state for mobile
+                this.touches = new Map(); // Track multiple touch points
+                this.lastTouchDistance = null; // For pinch-to-zoom
+                this.touchStartPos = null; // Track initial touch position for tap detection
+                this.touchMoved = false; // Track if touch moved (drag vs tap)
+
                 // Game objects
                 this.boxes = new Map(); // Only store modified boxes
                 this.bombs = [];
@@ -275,23 +281,122 @@
             // Touch event handlers
             handleTouchStart(e) {
                 e.preventDefault();
+
+                // Store all current touches
+                this.touches.clear();
+                for (let i = 0; i < e.touches.length; i++) {
+                    const touch = e.touches[i];
+                    const pos = this.getMousePos(touch);
+                    this.touches.set(touch.identifier, pos);
+                }
+
                 if (e.touches.length === 1) {
+                    // Single touch - potential drag or tap
                     const touch = e.touches[0];
-                    this.handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY, button: 0 });
+                    const pos = this.getMousePos(touch);
+                    this.isDragging = true;
+                    this.touchMoved = false;
+                    this.touchStartPos = { ...pos };
+                    this.lastMousePos = pos;
+                    document.body.classList.add('dragging');
+                } else if (e.touches.length === 2) {
+                    // Two touches - pinch to zoom
+                    this.isDragging = false;
+                    document.body.classList.remove('dragging');
+                    this.lastTouchDistance = this.getTouchDistance(e.touches);
                 }
             }
 
             handleTouchMove(e) {
                 e.preventDefault();
-                if (e.touches.length === 1) {
+
+                if (e.touches.length === 1 && this.isDragging) {
+                    // Single touch drag (panning)
                     const touch = e.touches[0];
-                    this.handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
+                    const pos = this.getMousePos(touch);
+
+                    const dx = pos.x - this.lastMousePos.x;
+                    const dy = pos.y - this.lastMousePos.y;
+
+                    // Check if moved significantly (for tap detection)
+                    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                        this.touchMoved = true;
+                    }
+
+                    this.camera.x -= dx / this.zoom;
+                    this.camera.y -= dy / this.zoom;
+
+                    this.lastMousePos = pos;
+                    this.checkTreasureHover(pos);
+                    this.checkPowerupBoxHover(pos);
+                } else if (e.touches.length === 2) {
+                    // Pinch to zoom
+                    const currentDistance = this.getTouchDistance(e.touches);
+
+                    if (this.lastTouchDistance !== null) {
+                        const scale = currentDistance / this.lastTouchDistance;
+
+                        // Get center point of pinch
+                        const touch1 = this.getMousePos(e.touches[0]);
+                        const touch2 = this.getMousePos(e.touches[1]);
+                        const centerX = (touch1.x + touch2.x) / 2;
+                        const centerY = (touch1.y + touch2.y) / 2;
+
+                        // Get world position before zoom
+                        const worldPosBefore = this.screenToWorld(centerX, centerY);
+
+                        // Apply zoom with limits
+                        const newZoom = this.zoom * scale;
+                        this.zoom = Math.max(0.25, Math.min(2.5, newZoom));
+
+                        // Get world position after zoom
+                        const worldPosAfter = this.screenToWorld(centerX, centerY);
+
+                        // Adjust camera to keep pinch center consistent
+                        this.camera.x += worldPosBefore.x - worldPosAfter.x;
+                        this.camera.y += worldPosBefore.y - worldPosAfter.y;
+                    }
+
+                    this.lastTouchDistance = currentDistance;
                 }
             }
 
             handleTouchEnd(e) {
                 e.preventDefault();
-                this.handleMouseUp({});
+
+                if (e.touches.length === 0) {
+                    // All touches ended
+                    if (!this.touchMoved && this.touchStartPos) {
+                        // Was a tap, not a drag - place bomb
+                        const worldPos = this.screenToWorld(this.touchStartPos.x, this.touchStartPos.y);
+                        const gridPos = this.getGridPos(worldPos.x, worldPos.y);
+                        this.plantBomb(gridPos.x, gridPos.y);
+                    }
+
+                    this.isDragging = false;
+                    document.body.classList.remove('dragging');
+                    this.lastTouchDistance = null;
+                    this.touchStartPos = null;
+                    this.touchMoved = false;
+                } else if (e.touches.length === 1) {
+                    // One finger lifted, one remains - switch to panning
+                    this.lastTouchDistance = null;
+                    const touch = e.touches[0];
+                    const pos = this.getMousePos(touch);
+                    this.isDragging = true;
+                    this.touchMoved = false;
+                    this.touchStartPos = { ...pos };
+                    this.lastMousePos = pos;
+                    document.body.classList.add('dragging');
+                }
+            }
+
+            getTouchDistance(touches) {
+                const touch1 = this.getMousePos(touches[0]);
+                const touch2 = this.getMousePos(touches[1]);
+                const dx = touch2.x - touch1.x;
+                const dy = touch2.y - touch1.y;
+                return Math.sqrt(dx * dx + dy * dy);
             }
 
             handleWheel(e) {
