@@ -9,28 +9,91 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    
+      contents: write
+      pull-requests: write
+
     steps:
-    - name: Checkout
+    - name: Checkout source
       uses: actions/checkout@v4
-    
-    - name: Setup Pages
-      uses: actions/configure-pages@v4
-    
-    - name: Upload artifact
-      uses: actions/upload-pages-artifact@v3
       with:
-        path: '.'
-    
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+        path: source
+
+    - name: Checkout gh-pages
+      uses: actions/checkout@v4
+      with:
+        ref: gh-pages
+        path: gh-pages
+      continue-on-error: true
+
+    - name: Initialize gh-pages if needed
+      working-directory: gh-pages
+      run: |
+        if [ ! -f "index.html" ] && [ ! -d ".git" ]; then
+          cd ..
+          rm -rf gh-pages
+          mkdir gh-pages
+          cd gh-pages
+          git init
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+        fi
+
+    - name: Configure Git
+      working-directory: gh-pages
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    - name: Deploy to root or PR subfolder
+      working-directory: gh-pages
+      run: |
+        if [ "${{ github.event_name }}" = "push" ]; then
+          # Production deployment to root
+          echo "Deploying to root (production)"
+
+          # Remove all files except pr-* directories
+          find . -maxdepth 1 ! -name 'pr-*' ! -name '.' ! -name '..' ! -name '.git' -exec rm -rf {} +
+
+          # Copy production files to root
+          cp -r ../source/* .
+
+          git add .
+          git commit -m "Deploy production to GitHub Pages" || echo "No changes to commit"
+        else
+          # PR preview deployment
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          PR_DIR="pr-${PR_NUMBER}"
+
+          echo "Deploying to ${PR_DIR} (PR preview)"
+
+          # Remove old PR deployment
+          rm -rf "${PR_DIR}"
+
+          # Create PR directory and copy files
+          mkdir -p "${PR_DIR}"
+          cp -r ../source/* "${PR_DIR}/"
+
+          git add "${PR_DIR}"
+          git commit -m "Deploy PR #${PR_NUMBER} preview" || echo "No changes to commit"
+        fi
+
+    - name: Push to gh-pages
+      working-directory: gh-pages
+      run: |
+        git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:gh-pages --force
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: |
+          ## 🚀 Preview Deployment
+
+          Your changes have been deployed to GitHub Pages!
+
+          **Preview URL:** https://${{ github.repository_owner }}.github.io/zen-blaster/pr-${{ github.event.pull_request.number }}/
+
+          The preview will be updated automatically with each new commit.
+        comment-tag: preview-deployment
