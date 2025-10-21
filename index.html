@@ -367,10 +367,16 @@
                 if (e.touches.length === 0) {
                     // All touches ended
                     if (!this.touchMoved && this.touchStartPos) {
-                        // Was a tap, not a drag - place bomb
-                        const worldPos = this.screenToWorld(this.touchStartPos.x, this.touchStartPos.y);
-                        const gridPos = this.getGridPos(worldPos.x, worldPos.y);
-                        this.plantBomb(gridPos.x, gridPos.y);
+                        // Was a tap, not a drag - check for items first, then place bomb
+                        const treasureCollected = this.checkTreasureHover(this.touchStartPos);
+                        const powerupCollected = this.checkPowerupBoxHover(this.touchStartPos);
+
+                        // Only plant bomb if no items were collected
+                        if (!treasureCollected && !powerupCollected) {
+                            const worldPos = this.screenToWorld(this.touchStartPos.x, this.touchStartPos.y);
+                            const gridPos = this.getGridPos(worldPos.x, worldPos.y);
+                            this.plantBomb(gridPos.x, gridPos.y);
+                        }
                     }
 
                     this.isDragging = false;
@@ -618,6 +624,7 @@
 
             checkTreasureHover(mousePos) {
                 const worldPos = this.screenToWorld(mousePos.x, mousePos.y);
+                let collected = false;
 
                 this.treasures.forEach(treasure => {
                     if (treasure.collected) return;
@@ -628,6 +635,7 @@
 
                     if (distance < this.collectRadius) { // Use dynamic collection radius
                         treasure.collected = true;
+                        collected = true;
                         this.score[treasure.type + 's']++;
                         this.updateScore();
 
@@ -647,10 +655,13 @@
                         }
                     }
                 });
+
+                return collected;
             }
 
             checkPowerupBoxHover(mousePos) {
                 const worldPos = this.screenToWorld(mousePos.x, mousePos.y);
+                let collected = false;
 
                 this.powerupBoxes.forEach(powerupBox => {
                     if (powerupBox.collected) return;
@@ -661,6 +672,7 @@
 
                     if (distance < 25) {
                         powerupBox.collected = true;
+                        collected = true;
 
                         if (powerupBox.type === 'radius') {
                             this.radiusUpgrades++;
@@ -688,6 +700,8 @@
                         }
                     }
                 });
+
+                return collected;
             }
 
             getTreasureColor(type) {
